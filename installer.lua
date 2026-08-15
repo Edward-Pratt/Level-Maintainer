@@ -1,6 +1,6 @@
 local shell = require("shell")
 local filesystem = require("filesystem")
-local scripts = {"src/AE2.lua", "src/Utility.lua", "Maintainer.lua"}
+local scripts = {"src/AE2.lua", "src/Identity.lua", "src/Utility.lua", "Maintainer.lua"}
 
 local paths = {"src", "lib"}
 
@@ -8,7 +8,7 @@ local function exists(filename)
     return filesystem.exists(shell.getWorkingDirectory() .. "/" .. filename)
 end
 
-local repo = "https://raw.githubusercontent.com/Echoloquate/Level-Maintainer/";
+local repo = "https://raw.githubusercontent.com/Edward-Pratt/Level-Maintainer/";
 local branch = "master"
 
 for i = 1, #paths do
@@ -27,6 +27,12 @@ end
 
 if not exists("config.lua") then
     shell.execute(string.format("wget %s%s/config.lua", repo, branch));
+end
+
+-- identity.cache is generated at runtime and is safe to keep across updates,
+-- but a stale entry after an upgrade is easiest to clear here.
+if exists("identity.cache") then
+    filesystem.remove(shell.getWorkingDirectory() .. "/identity.cache");
 end
 
 shell.execute("reboot");

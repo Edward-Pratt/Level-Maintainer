@@ -1,27 +1,57 @@
 local cfg = {}
 
--- EXAMPLE --
-
--- [item_name] = {threshold, batch_size, fluid_name} -- fluid_name is REQUIRED for fluid drops
--- ["Osmium Dust"] = {nil, 64} -- regular item without threshold
--- ["drop of Molten SpaceTime"] = {1000000, 1, "spacetime"} -- fluid drop with threshold and fluid name
+-- ITEMS -----------------------------------------------------------------------
+--
+-- Keyed by the label exactly as it appears in the ME terminal.
+--
+--   [label] = {threshold, batch}
+--
+-- threshold  keep at least this many in the network (nil = craft every cycle)
+-- batch      how many to request at a time
+--
+-- The named form works too, and is the only way to pin a single entry to a CPU:
+--   ["Osmium Dust"] = {threshold = 64, batch = 64, cpu = "MaintenanceCPU"}
+--
+-- NBT is handled automatically. AE2FC fluid drops no longer need the fluid name
+-- spelled out -- the identity (including the NBT tag) is read from the pattern
+-- once and cached in identity.cache.
 
 cfg["items"] = {
-    ["drop of Molten SpaceTime"] = {nil, 1, "spacetime"},
-    ["drop of Molten White Dwarf Matter"] = {nil, 1, "white_dwarf_matter"}
+    ["drop of Molten SpaceTime"] = {nil, 1},
+    ["drop of Molten White Dwarf Matter"] = {nil, 1},
+    -- ["Osmium Dust"] = {64, 64},
 }
 
--- Native fluid maintenance (GTNH 2.9+ only -- requires the StackApi-aware
--- ME interface). Safe to omit entirely on older versions.
+-- FLUIDS ----------------------------------------------------------------------
 --
--- [fluid_label] = {threshold_mb, batch_mb[, fluid_registry_name]}
--- The third value is an optional override -- the fluid registry name is
--- auto-detected from the craftable's stack, so usually you only need the first two.
--- Pass it explicitly only if auto-detection picks the wrong fluid.
+-- Native fluid maintenance, GTNH 2.9+ only. Amounts are real mB, so there is no
+-- need to go through fluid drops.
+--
+--   [label] = {threshold_mb, batch_mb}
+
 cfg["fluids"] = {
-    -- ["Molten SpaceTime"] = {nil, 1000},
+    -- ["Molten SpaceTime"] = {1000000, 16000},
 }
 
+-- BEHAVIOUR -------------------------------------------------------------------
+
+-- Seconds between passes.
 cfg["sleep"] = 10
+
+-- Optional: send every request to one named crafting CPU, keeping routine
+-- top-ups off the CPUs you reserve for big jobs. Must match the CPU name
+-- exactly, or leave nil to let AE2 choose.
+cfg["cpu"] = nil
+
+-- Optional: wake as soon as the network reports a stock change instead of
+-- waiting out the full interval (uses setItemEventSubscription).
+--
+-- Only worth enabling for tight thresholds. On a busy network this fires
+-- constantly, and with insertIdsInConverters=true it spams the server log --
+-- see the README before turning it on.
+cfg["events"] = false
+
+-- Floor on how often a cycle may run in event mode.
+cfg["minInterval"] = 2
 
 return cfg
