@@ -1,152 +1,121 @@
 local component = require("component")
+local Identity = require("src.Identity")
+
 local ME = component.me_interface
 
 local AE2 = {}
 
--- Lightweight cache for specific items only.
--- Values: a craftable userdata (hit), or `false` (negative lookup).
-local itemCache = {}
-local fluidNameCache = {} -- name -> fluid registry name, or false if the craftable has no fluid stack
-local cacheTimestamp = 0
-local CACHE_DURATION = 600 -- 10 minutes in seconds
+-- GTNH 2.9 (OpenComputers 1.12.4x-GTNH + the AE2 StackApi rework) added direct
+-- lookups that replace the old "scan every craftable and filter in Lua"
+-- approach. Probe for them rather than trusting a version number.
+AE2.caps = {
+    getCraftable = ME.getCraftable ~= nil,
+    fluids = ME.getFluidInNetwork ~= nil,
+    itemEvents = ME.setItemEventSubscription ~= nil
+}
 
--- Function to get or cache a specific craftable item
-local function getCraftableForItem(itemName)
-    local currentTime = os.time()
+-- Craftable handles are only needed to issue a request, and the recipe for a
+-- given stack identity does not change while the script runs, so these are
+-- cached for the lifetime of the process.
+local craftables = {}
 
-    local cached = itemCache[itemName]
-    if cached ~= nil and currentTime - cacheTimestamp < CACHE_DURATION then
-        if cached == false then return nil end
-        return cached
+-- Current stock for a stack identity, in items or mB. Returns 0 when the
+-- network holds none.
+--
+-- Both of these are hash lookups against the storage monitor. The item form
+-- takes the detail-table variant so the NBT tag round-trips as raw bytes --
+-- the string variant expects SNBT and cannot represent a compressed tag.
+function AE2.getStock(id)
+    if id.type == "fluid" then
+        local stack = ME.getFluidInNetwork(id.name)
+        if stack == nil then return 0 end
+        return stack.amount or stack.size or 0
     end
 
-    -- If cache is too old, clear it completely to save memory
-    if currentTime - cacheTimestamp >= CACHE_DURATION then
-        itemCache = {}
-        fluidNameCache = {}
-        cacheTimestamp = currentTime
-    end
-
-    -- Look for this specific item in craftables
-    local craftables = ME.getCraftables({["label"] = itemName})
-    if #craftables >= 1 then
-        itemCache[itemName] = craftables[1] -- Cache only this one item
-        return craftables[1]
-    end
-
-    itemCache[itemName] = false -- Cache the negative lookup so misspelled entries don't re-query every cycle
-    return nil
+    local stack = ME.getItemInNetwork({
+        ["name"] = id.name,
+        ["damage"] = id.damage or 0,
+        ["tag"] = id.tag
+    })
+    if stack == nil then return 0 end
+    return stack.size or 0
 end
 
-function AE2.requestItem(name, threshold, count, fluidName)
-    local craftable = getCraftableForItem(name)
+-- Fetches (and caches) the craftable handle for a stack identity.
+function AE2.getCraftable(id)
+    local key = Identity.key(id)
 
-    if craftable then
-        local item = (craftable.getStack or craftable.getItemStack)(craftable)
-        if threshold ~= nil then
-            local itemInSystem = nil
-            
-            if fluidName then
-                local fluidTag = '{Fluid:' .. fluidName .. '}'
-                itemInSystem = ME.getItemInNetwork("ae2fc:fluid_drop", 0, fluidTag)
-            else
-                if item.name then
-                    if item.tag then
-                        itemInSystem = ME.getItemInNetwork(item.name, item.damage or 0, item.tag)
-                    end
-                    
-                    -- Fallback: try with just the internal name and damage
-                    if itemInSystem == nil then
-                        itemInSystem = ME.getItemInNetwork(item.name, item.damage or 0)
-                    end
-                end
-            end
-            
-            if itemInSystem ~= nil and itemInSystem.size >= threshold then 
-                return table.unpack({false, "The amount of " .. (itemInSystem.label or name) .. " (" .. itemInSystem.size .. ") meets or exceeds threshold (" .. threshold .. ")! Aborting request."})
-            end
-        end
-        
-        if item.label == name then
-            local craft = craftable.request(count)
+    local craftable = craftables[key]
+    if craftable ~= nil then
+        if craftable == false then return nil end
+        return craftable
+    end
 
-            while craft.isComputing() == true do
-                os.sleep(1)
-            end
-            if craft.hasFailed() then
-                return table.unpack({false, "Failed to request " .. name .. " x " .. count})
-            else
-                return table.unpack({true, "Requested " .. name .. " x " .. count})
+    local detail = { ["name"] = id.name }
+    if id.type == "item" then
+        detail.damage = id.damage or 0
+        detail.tag = id.tag
+    end
+
+    craftable = ME.getCraftable(detail, id.type)
+    craftables[key] = craftable or false
+    return craftable
+end
+
+-- Issues a crafting request and returns the job handle without waiting for the
+-- CPU to finish planning. The caller polls it later so one slow recipe cannot
+-- stall the rest of the list.
+--
+-- `cpuName` optionally pins the job to a named crafting CPU, which keeps
+-- routine top-ups off the CPUs reserved for big jobs.
+function AE2.request(id, amount, cpuName)
+    local craftable = AE2.getCraftable(id)
+    if craftable == nil then
+        return nil, (id.label or id.name) .. " has no crafting pattern"
+    end
+
+    local job, reason
+    if cpuName ~= nil and cpuName ~= "" then
+        job, reason = craftable.request(amount, true, cpuName)
+    else
+        job, reason = craftable.request(amount)
+    end
+
+    if job == nil then
+        return nil, "could not request " .. (id.label or id.name) .. ": " .. tostring(reason)
+    end
+
+    return job
+end
+
+-- Drops the cached craftable handle, forcing a fresh lookup next cycle.
+function AE2.forget(id)
+    craftables[Identity.key(id)] = nil
+end
+
+-- Set of stack keys that a crafting CPU is currently working towards.
+--
+-- getCpus() already reports `busy` in the returned table, so idle CPUs are
+-- skipped without a further component call into finalOutput().
+function AE2.busyOutputs()
+    local outputs = {}
+
+    for _, entry in pairs(ME.getCpus()) do
+        if entry.busy then
+            local output = entry.cpu.finalOutput()
+            if output ~= nil and output.name ~= nil then
+                outputs[Identity.key(output)] = true
             end
         end
     end
-    return table.unpack({false, name .. " is not craftable!"})
+
+    return outputs
 end
 
--- Native fluid maintenance via getFluidInNetwork (GTNH 2.9+).
--- `name` is the fluid craftable label; `fluidName` is the fluid registry name and is
--- auto-detected from the craftable's stack if omitted (pass it only as an override).
-function AE2.requestFluid(name, threshold, count, fluidName)
-    local craftable = getCraftableForItem(name)
-
-    if craftable then
-        if threshold ~= nil then
-            if not fluidName then
-                local cached = fluidNameCache[name]
-                if cached == nil then
-                    local stack = (craftable.getStack or craftable.getItemStack)(craftable)
-                    cached = (stack and stack.name) or false
-                    fluidNameCache[name] = cached
-                end
-                if cached then fluidName = cached end
-            end
-
-            if fluidName then
-                local fluidInSystem = ME.getFluidInNetwork(fluidName)
-                local amount = fluidInSystem and (fluidInSystem.size or fluidInSystem.amount)
-                if amount and amount >= threshold then
-                    return table.unpack({false, "The amount of " .. (fluidInSystem.label or name) .. " (" .. amount .. " mB) meets or exceeds threshold (" .. threshold .. " mB)! Aborting request."})
-                end
-            end
-        end
-
-        local craft = craftable.request(count)
-
-        while craft.isComputing() == true do
-            os.sleep(1)
-        end
-        if craft.hasFailed() then
-            return table.unpack({false, "Failed to request " .. name .. " x " .. count .. " mB"})
-        else
-            return table.unpack({true, "Requested " .. name .. " x " .. count .. " mB"})
-        end
+function AE2.setItemEvents(enabled)
+    if AE2.caps.itemEvents then
+        ME.setItemEventSubscription(enabled)
     end
-    return table.unpack({false, name .. " is not craftable!"})
-end
-
-function AE2.checkIfCrafting()
-    local cpus = ME.getCpus()
-    local items = {}
-    for k, v in pairs(cpus) do
-        local finaloutput = v.cpu.finalOutput()
-        if finaloutput ~= nil then
-            items[finaloutput.label] = true
-        end
-    end
-
-    return items
-end
-
--- Returns true if the ME interface exposes the GTNH 2.9+ native fluid API.
-function AE2.hasFluidSupport()
-    return ME.getFluidInNetwork ~= nil
-end
-
--- Function to manually clear the cache if needed
-function AE2.clearCache()
-    itemCache = {}
-    fluidNameCache = {}
-    cacheTimestamp = 0
 end
 
 return AE2
