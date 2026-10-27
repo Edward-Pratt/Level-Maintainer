@@ -54,4 +54,8 @@ cfg["events"] = false
 -- Floor on how often a cycle may run in event mode.
 cfg["minInterval"] = 2
 
+-- Once a day, say in the log when a newer release is out (needs an Internet
+-- Card; without one nothing happens). It never installs: run `installer`.
+cfg["checkUpdates"] = true
+
 return cfg
