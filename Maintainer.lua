@@ -1,6 +1,7 @@
 local component = require("component")
 local computer = require("computer")
 local event = require("event")
+local shell = require("shell")
 local cfg = require("config")
 local util = require("src.Utility")
 
@@ -202,6 +203,50 @@ local function cycle(now)
     end
 end
 
+-- ----------------------------------------------------------------------------
+-- Update check
+-- ----------------------------------------------------------------------------
+
+-- Once a day of uptime (os.time() runs on the game clock), say whether a newer
+-- release is out. It never installs anything: that is a deliberate `installer`.
+-- It needs an Internet Card and does nothing without one, and cfg.checkUpdates =
+-- false turns it off. The check itself lives in installer.lua.
+local UPDATE_EVERY = 24 * 60 * 60
+local nextUpdateCheck = 0
+local dir = shell.getWorkingDirectory()
+
+local function readFile(path)
+    local f = io.open(path, "rb")
+    if not f then return nil end
+    local data = f:read("*a")
+    f:close()
+    return data
+end
+
+local version = (readFile(dir .. "/VERSION") or ""):match("^%s*(%S+)")
+
+local function checkForUpdate(now)
+    if cfg.checkUpdates == false or now < nextUpdateCheck then return end
+    nextUpdateCheck = now + UPDATE_EVERY
+    if not component.isAvailable("internet") then return end
+
+    local ok, err = pcall(function()
+        local source = readFile(dir .. "/installer.lua")
+        -- An installer from before releases would install and reboot when run.
+        if source == nil or not source:find("LM_INSTALLER_MODULE", 1, true) then return end
+        local updater = assert(load(source, "=installer"))("--module")
+        local latest = updater.latest()
+        if updater.newer(latest, version) then
+            util.log("Level Maintainer " .. latest .. " is out (this is " .. (version or "an unreleased version")
+                .. "). Stop it and run `installer` to update.")
+        end
+    end)
+    if not ok then
+        if tostring(err):find("interrupted", 1, true) then error(err, 0) end
+        util.log("Update check failed: " .. tostring(err))
+    end
+end
+
 -- A chunk unloading or a cable being broken makes component calls throw. That
 -- should not permanently kill a script meant to run unattended, so transient
 -- errors are logged and retried -- but a genuinely broken setup still stops
@@ -218,6 +263,7 @@ local function run()
 
     while true do
         local lastCycle = computer.uptime()
+        checkForUpdate(lastCycle)
 
         local ok, err = pcall(cycle, lastCycle)
         if ok then
@@ -237,7 +283,7 @@ local function run()
     end
 end
 
-util.log("Level Maintainer starting (" .. (useEvents and "event" or "poll") .. " mode, "
+util.log("Level Maintainer " .. (version or "(unreleased)") .. " starting (" .. (useEvents and "event" or "poll") .. " mode, "
     .. interval .. "s interval).")
 
 local ok, err = pcall(run)

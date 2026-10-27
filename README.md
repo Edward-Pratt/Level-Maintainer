@@ -27,17 +27,24 @@ lua -e "print(require('component').me_interface.getCraftable ~= nil)"
   what it is working on and the script will re-request things already in progress
 - Any basic OpenComputers computer: Tier 2 case, CPU, 2× Tier 1.5 RAM, HDD, screen
   and GPU, keyboard
-- An **Internet Card** for the installer only. It can be removed afterwards
+- An **Internet Card** and a **Data Card** (any tier) to install and update. The
+  installer uses the Data Card to check every file against the release's checksums,
+  and refuses to install without one. Both can be removed afterwards; with the
+  Internet Card in, the maintainer also says once a day when a new release is out
 
 ---
 
 ## Installation
 
+From `/home`:
+
 ```bash
-wget raw.githubusercontent.com/Edward-Pratt/Level-Maintainer/master/installer.lua && installer
+wget -f https://raw.githubusercontent.com/Edward-Pratt/Level-Maintainer/master/installer.lua && installer
 ```
 
-The computer reboots when the installer finishes. Then edit `config.lua` and run:
+The installer downloads the newest stable release from GitHub, checks each file
+against the release's `SHA256SUMS`, installs it, and reboots. Then edit `config.lua`
+and run:
 
 ```bash
 Maintainer
@@ -48,6 +55,58 @@ To start it automatically on boot, add it to `/home/.shrc`:
 ```bash
 echo Maintainer >> /home/.shrc
 ```
+
+---
+
+## Updates
+
+Releases are `vX.Y.Z` tags on GitHub; the installer follows the newest one. With an
+Internet Card in, the maintainer logs a line once a day when a newer release is
+out. It never installs by itself (set `cfg.checkUpdates = false` to stop the
+check). Run these from the folder it's installed in:
+
+```bash
+installer --check      # what's installed, and what's available
+installer              # update to the newest release, then reboot
+installer --rollback   # go back to the version before, then reboot
+installer v1.2.0-rc.1  # install one release by name: a release candidate, or an older one
+```
+
+An update needs the Internet Card and the Data Card again. It downloads into
+`.update/` and changes nothing unless every file matches `SHA256SUMS`. The files it
+replaces are kept in `.previous/` for `--rollback`; running `--rollback` twice
+returns to the newer version.
+
+Your `config.lua` is never replaced. When a release brings its own, it's written
+beside yours as `config.default.lua`: compare the two for new settings. Settings
+missing from your config keep their defaults. `identity.cache` is cleared on each
+update, and is rebuilt on the next start.
+
+An install from before releases (straight from `master`) updates with the
+one-liner above, since its old installer doesn't know about releases.
+
+---
+
+## Releasing
+
+Releases are made with [herald](https://github.com/Edward-Pratt/herald) from an
+up-to-date `master`:
+
+```bash
+herald release minor        # or patch, major, or 1.4.0: tags vX.Y.Z
+herald release minor --rc   # a release candidate (a pre-release): v1.5.0-rc.1, rc.2...
+```
+
+The tag's workflow publishes the files with `SHA256SUMS`. A release can't hold
+folders, so `src/AE2.lua` ships as `src.AE2.lua` and the installer puts it back in
+`src/`. `VERSION` holds the tag. Release candidates are skipped by the installer
+unless named, so test one in game with `installer vX.Y.Z-rc.N` before releasing it.
+Until the first stable release, the one-liner can't install anything: name a
+candidate instead.
+
+`lua test/installer.lua` runs the installer against fake releases with
+OpenComputers' APIs stubbed; CI runs it on every push. It can't replace a test in
+game.
 
 ---
 
@@ -105,6 +164,7 @@ Leave the block empty if you do not need it.
 | `cpu` | `nil` | Send every request to one named crafting CPU |
 | `events` | `false` | Wake on network changes instead of waiting out the interval |
 | `minInterval` | `2` | Floor on cycle rate when `events` is on |
+| `checkUpdates` | `true` | Log once a day when a newer release is out (needs an Internet Card) |
 
 Setting `cpu` is worth doing on a big base: it keeps routine top-ups off the CPUs
 with all your co-processors, so a maintenance job never occupies the CPU you wanted
