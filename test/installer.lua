@@ -76,8 +76,15 @@ local internet = {
             if data then code, body = 200, data end
         end
         local sent = false
+        -- How OC reports an HTTP error isn't certain: through response(), or a failed finishConnect().
+        local connect = function() return true end
+        if code ~= 200 and state.errors == "nil" then
+            connect = function() return nil, url end
+        elseif code ~= 200 and state.errors == "throw" then
+            connect = function() error("java.io.IOException: Server returned HTTP response code: " .. code .. " for URL: " .. url) end
+        end
         return setmetatable({
-            finishConnect = function() return true end,
+            finishConnect = connect,
             response = function() return code, "", {} end,
             close = function() end,
         }, {
@@ -178,6 +185,14 @@ state.latest = nil
 local ok, out = run(root .. "/installer.lua")
 check("with no stable release yet, it says how to install a candidate", not ok and has(out, "no stable release yet"), out)
 
+state.errors = "nil"
+ok, out = run(root .. "/installer.lua")
+check("and when the 404 arrives as a failed connection", has(out, "no stable release yet"), out)
+state.errors = "throw"
+ok, out = run(root .. "/installer.lua")
+check("or as a thrown error", has(out, "no stable release yet"), out)
+state.errors = nil
+
 state.latest = "v1.0.0"
 ok, out = run(root .. "/installer.lua")
 check("a fresh install succeeds", ok, out)
@@ -245,6 +260,19 @@ state.latest = "v1.2.1"
 before = snapshot()
 ok, out = installer()
 check("a missing file is refused, with the old files kept", has(out, "HTTP 404") and snapshot() == before, out)
+state.errors = "throw"
+ok, out = installer()
+state.errors = nil
+check("also when the 404 is thrown", has(out, "HTTP 404") and snapshot() == before, out)
+
+-- An update cut off partway through its swap leaves .swap, which may hold the only old files.
+assert(sh("mkdir -p " .. q(home .. "/.swap") .. " && echo old > " .. q(home .. "/.swap/Maintainer.lua")))
+release("v1.2.3")
+state.latest = "v1.2.3"
+before = snapshot()
+ok, out = installer()
+check("a leftover .swap stops an update rather than being cleared", has(out, "interrupted update") and snapshot() == before, out)
+assert(sh("rm -rf " .. q(home .. "/.swap")))
 
 -- A move that fails partway through the swap.
 release("v1.2.2")

@@ -121,17 +121,25 @@ local function get(url)
     local internet = require("internet")
     local handle = internet.request(url, nil, { ["User-Agent"] = "Level-Maintainer-installer" })
     local deadline = computer.uptime() + 30
+    local code = nil
     while true do
-        local ok, err = handle.finishConnect()
-        if ok then break end
-        if ok == nil then error("can't reach " .. url .. ": " .. tostring(err), 0) end
+        local done, ok, err = pcall(handle.finishConnect)
+        if done and ok then break end
+        if not done or ok == nil then
+            -- OC may report an HTTP error here rather than through response(): Java names a 404 by its URL
+            -- (FileNotFoundException) and other codes as "response code: N".
+            local reason = tostring(done and err or ok)
+            code = tonumber(reason:match("response code: (%d+)")) or (reason:find(url, 1, true) and 404)
+            if not code then error("can't reach " .. url .. ": " .. reason, 0) end
+            break
+        end
         if computer.uptime() > deadline then
             handle.close()
             error("timed out reaching " .. url, 0)
         end
         os.sleep(0.1)
     end
-    local code = handle.response()
+    code = code or handle.response()
     if code ~= 200 then
         handle.close()
         if code == 403 or code == 429 then
@@ -175,7 +183,12 @@ end
 local function swapIn(dir, src)
     local incoming = readList(src .. "/.manifest") or error("nothing to install in " .. src, 0)
     local swap = dir .. "/.swap"
-    filesystem.remove(swap)
+    -- A .swap left behind means a swap was cut off (the computer stopped): it may hold the only copy of the old
+    -- version, so don't clear it.
+    if filesystem.exists(swap) then
+        error(swap .. " is left from an interrupted update and may hold the old files. Move them back into place "
+            .. "(src.X.lua is src/X.lua), delete .swap and run it again.", 0)
+    end
     filesystem.makeDirectory(swap)
     filesystem.makeDirectory(dir .. "/src")
 
