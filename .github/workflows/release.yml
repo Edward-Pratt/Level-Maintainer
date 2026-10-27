@@ -1,0 +1,40 @@
+# Made by `herald adopt build`. A vX.Y.Z tag (from `herald release`) becomes a GitHub release of what the build job
+# writes to out/; a vX.Y.Z-rc.N tag becomes a pre-release.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Build only from this tag: no cache shared with other runs. Write files, not folders, to out/ (tar a folder up).
+      # A release holds files, not folders, so src/X.lua ships as src.X.lua; installer.lua maps it back. VERSION
+      # carries the tag, so the computer can say what it runs and the updater knows what's installed.
+      - name: Build
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          mkdir out
+          cp Maintainer.lua config.lua installer.lua out/
+          for f in src/*.lua; do cp "$f" "out/src.${f#src/}"; done
+          echo "$TAG" > out/VERSION
+          ls -l out
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-files
+          path: out/
+          if-no-files-found: error
+
+  release:
+    needs: build
+    uses: Edward-Pratt/herald/.github/workflows/release.yml@v1
+    with:
+      artifact: release-files
+    permissions:
+      contents: write
