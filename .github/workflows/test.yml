@@ -1,0 +1,23 @@
+# Runs the installer's tests under Lua 5.3, the version OpenComputers runs.
+name: Test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Lua 5.3
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq lua5.3
+      - name: Check syntax
+        run: for f in *.lua src/*.lua test/*.lua; do luac5.3 -p "$f"; done
+      - name: Installer tests
+        run: lua5.3 test/installer.lua
